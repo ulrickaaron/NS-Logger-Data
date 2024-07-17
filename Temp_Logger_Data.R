@@ -24,9 +24,19 @@ all_data <- all_data %>%
   summarize(Temperature = mean(Temperature, na.rm = TRUE)) %>%
   ungroup()
 
+# Change Site Names
+all_data$Site <- gsub("HB", "Halibut Island", all_data$Site)
+all_data$Site <- gsub("LI", "Long Island", all_data$Site)
+all_data$Site <- gsub("MO", "The Moll", all_data$Site)
+all_data$Site <- gsub("SC", "Sandy Cove", all_data$Site)
+all_data$Site <- gsub("TL", "The Lodge", all_data$Site)
+
+# Add m to depth values
+all_data$Depth <- paste0(all_data$Depth, "m")
+
 # Create new Site_Depth Column
 all_data <- all_data %>% 
-  mutate(Site_Depth = paste(Site, Depth, sep = "_"))
+  mutate(Site_Depth = paste(Site, Depth, sep = " "))
 
 # Reorder columns
 all_data <- all_data %>%
@@ -48,6 +58,13 @@ identify_gaps <- function(data) {
     select(Date, Next_Date) %>%
     rename(Start = Date, End = Next_Date)
   return(gaps)
+}
+
+# Function to find data gaps for a given site depth
+find_data_gaps <- function(data) {
+  gaps <- identify_gaps(data)
+  years_with_gaps <- unique(c(year(gaps$Start), year(gaps$End)))
+  list(gaps = gaps, years_with_gaps = years_with_gaps)
 }
 
 # Group by Site_Depth and identify gaps
@@ -148,6 +165,72 @@ pdf("South Shore and ESI Logger Data.pdf", width = 12, height = 8)
 for (i in seq(1, length(site_depths), 4)) {
   plots <- map(site_depths[i:min(i+3, length(site_depths))], ~plot_temp_trends(all_data, .x))
   print(wrap_plots(plots, ncol = 2))
+}
+
+dev.off()
+
+#### Differences between depths ####
+
+
+# Identify gaps in the data
+identify_gaps <- function(data) {
+  data <- data %>% arrange(Date)
+  data <- data %>%
+    mutate(Next_Date = lead(Date),
+           Gap = ifelse(difftime(Next_Date, Date, units = "days") > 1, TRUE, FALSE))
+  gaps <- data %>% 
+    filter(Gap == TRUE) %>%
+    select(Date, Next_Date) %>%
+    rename(Start = Date, End = Next_Date)
+  return(gaps)
+}
+
+# Group by Site_Depth and identify gaps
+years_with_gaps <- all_data %>%
+  group_by(Site_Depth) %>%
+  do(identify_gaps(.)) %>%
+  ungroup()
+
+# Calculate the mean temperature for each site on each date
+site_means <- all_data %>%
+  group_by(Site, Date) %>%
+  summarize(Site_Mean_Temperature = mean(Temperature, na.rm = TRUE)) %>%
+  ungroup()
+
+# Merge the site means back with the original data
+all_data <- all_data %>%
+  left_join(site_means, by = c("Site", "Date"))
+
+# Calculate the normalized temperature
+all_data <- all_data %>%
+  mutate(Normalized_Temperature = Temperature - Site_Mean_Temperature)
+
+# Function to plot normalized temperature trends
+plot_normalized_temp_trends <- function(data, site, site_gaps) {
+  site_data <- data %>% filter(Site == site)
+  
+  ggplot(site_data, aes(x = Date, y = Normalized_Temperature, color = factor(Depth))) +
+    geom_line(size = 0.3) +
+    geom_rect(data = site_gaps, aes(xmin = as.Date(Start), xmax = as.Date(End), ymin = -Inf, ymax = Inf),
+              fill = "red", alpha = 0.2, inherit.aes = FALSE) +
+    labs(title = paste("Normalized Temperature Trends for", site),
+         x = "Date",
+         y = "Normalized Temperature (°C)",
+         color = "Depth (m)") +
+    theme_bw() +
+    scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_y_continuous()
+}
+
+# Generate plots for each site
+sites <- unique(all_data$Site)
+
+pdf("Normalized_Temperature_Trends_with_Gaps.pdf", width = 12, height = 8)
+
+for (site in sites) {
+  site_gaps <- years_with_gaps %>% filter(str_detect(Site_Depth, site))
+  print(plot_normalized_temp_trends(all_data, site, site_gaps))
 }
 
 dev.off()
